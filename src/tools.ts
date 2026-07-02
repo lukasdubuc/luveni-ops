@@ -23,14 +23,14 @@ export const TOOLS: Record<string, Tool> = {
       parameters: {
         type: "object",
         properties: {
-          source: { type: "string", enum: ["printful", "apliiq", "zendrop", "manual"] },
+          source: { type: "string", enum: ["printful", "apliiq", "zendrop", "cj", "manual"] },
           onlyPublished: { type: "boolean" },
           limit: { type: "number" },
         },
       },
     },
     run: async (i) => {
-      let q = db.from("products").select("id,title,source,price_cents,is_published,buffer_qty,variants").limit(i.limit ?? 50);
+      let q = db.from("products").select("id,title,source,category,price_cents,cost_cents,is_published,buffer_qty,variants").limit(i.limit ?? 50);
       if (i.source) q = q.eq("source", i.source);
       if (i.onlyPublished) q = q.eq("is_published", true);
       const { data, error } = await q;
@@ -109,6 +109,115 @@ export const TOOLS: Record<string, Tool> = {
         body: JSON.stringify({ productId: i.productId, channel: i.channel }),
       });
       return await res.json().catch(() => ({ ok: res.ok, status: res.status }));
+    },
+  },
+
+  // ── Pricing engine (Orion / Astra / Finley) ──
+  // Single source of truth is the storefront's pricing-engine edge function
+  // (parameters in the pricing_rules table): retail = charm(max(
+  //   (cost + ship_first + min_profit)/(1-fee_rate), cost/(1-target_margin))).
+  compute_price: {
+    spec: {
+      name: "compute_price",
+      description: "Quote the retail price for a vendor cost via the pricing engine. Returns retail, fees, after-fee profit, margin, and the matched category rule.",
+      parameters: {
+        type: "object",
+        properties: {
+          cost_cents: { type: "number", description: "Vendor cost in cents" },
+          title: { type: "string", description: "Product title for category keyword matching" },
+          category: { type: "string", description: "pricing_rules.key to force a category" },
+        },
+        required: ["cost_cents"],
+      },
+    },
+    run: async (i) => {
+      const res = await fetch(`${process.env.SUPABASE_URL}/functions/v1/pricing-engine`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}` },
+        body: JSON.stringify({ action: "quote", cost_cents: i.cost_cents, title: i.title, category: i.category }),
+      });
+      return await res.json().catch(() => ({ ok: res.ok, status: res.status }));
+    },
+  },
+
+  reprice_products: {
+    spec: {
+      name: "reprice_products",
+      description: "Reprice products from their stored vendor cost using current pricing_rules. Scope to one product or a source. Never lowers cost basis; only retail changes.",
+      parameters: {
+        type: "object",
+        properties: {
+          source: { type: "string", enum: ["printful", "apliiq", "zendrop", "cj", "manual"] },
+          productId: { type: "string" },
+          publish: { type: "boolean", description: "Also publish repriced products to the storefront" },
+        },
+      },
+    },
+    run: async (i) => {
+      const res = await fetch(`${process.env.SUPABASE_URL}/functions/v1/pricing-engine`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}` },
+        body: JSON.stringify({ action: "reprice", source: i.source, productId: i.productId, publish: i.publish === true }),
+      });
+      return await res.json().catch(() => ({ ok: res.ok, status: res.status }));
+    },
+  },
+
+  // ── Tune a pricing rule (Orion — the tuning surface for the engine) ──
+  update_pricing_rule: {
+    spec: {
+      name: "update_pricing_rule",
+      description: "Update parameters of one pricing_rules row (min_profit_cents, target_margin, fee_rate, ship_first_cents, ship_addl_cents). Changes apply to future pricing; run reprice_products to apply to the catalog.",
+      parameters: {
+        type: "object",
+        properties: {
+          key: { type: "string" },
+          min_profit_cents: { type: "number" },
+          target_margin: { type: "number" },
+          fee_rate: { type: "number" },
+          ship_first_cents: { type: "number" },
+          ship_addl_cents: { type: "number" },
+        },
+        required: ["key"],
+      },
+    },
+    run: async (i) => {
+      const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+      for (const k of ["min_profit_cents", "target_margin", "fee_rate", "ship_first_cents", "ship_addl_cents"]) {
+        if (i[k] !== undefined) patch[k] = i[k];
+      }
+      const { error } = await db.from("pricing_rules").update(patch).eq("key", i.key);
+      return error ? { error: error.message } : { ok: true, key: i.key, patch };
+    },
+  },
+
+  // ── Run a vendor catalog/inventory sync (Astra / Atlas) ──
+  run_vendor_sync: {
+    spec: {
+      name: "run_vendor_sync",
+      description: "Trigger a vendor sync edge function. CJ catalog sync imports products (auto-priced + published); withInventory also refreshes live CJ stock afterwards.",
+      parameters: {
+        type: "object",
+        properties: {
+          vendor: { type: "string", enum: ["cj", "printful", "zendrop", "apliiq"] },
+          withInventory: { type: "boolean" },
+        },
+        required: ["vendor"],
+      },
+    },
+    run: async (i) => {
+      const fn: Record<string, string> = { cj: "cj-catalog-sync", printful: "printful-sync", zendrop: "zendrop-sync", apliiq: "apliiq-sync" };
+      const call = async (name: string) => {
+        const res = await fetch(`${process.env.SUPABASE_URL}/functions/v1/${name}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}` },
+          body: "{}",
+        });
+        return await res.json().catch(() => ({ ok: res.ok, status: res.status }));
+      };
+      const catalog = await call(fn[i.vendor]);
+      const inventory = i.vendor === "cj" && i.withInventory ? await call("cj-inventory-sync") : undefined;
+      return { catalog, inventory };
     },
   },
 
