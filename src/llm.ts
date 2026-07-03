@@ -27,8 +27,15 @@ export interface ChatResult {
   outputTokens: number;
 }
 
-const PROVIDER = process.env.LLM_PROVIDER ?? "anthropic";
-const MODEL = process.env.LLM_MODEL ?? "claude-sonnet-5";
+// Default the whole fleet to OpenRouter free models so agents never burn
+// paid Claude credits. Override with LLM_PROVIDER / LLM_MODEL when needed.
+const PROVIDER = process.env.LLM_PROVIDER ?? "openrouter";
+const DEFAULT_MODEL: Record<string, string> = {
+  openrouter: "deepseek/deepseek-chat-v3-0324:free",
+  anthropic: "claude-sonnet-5",
+  gemini: "gemini-2.5-flash",
+};
+const MODEL = process.env.LLM_MODEL ?? DEFAULT_MODEL[PROVIDER] ?? "deepseek/deepseek-chat-v3-0324:free";
 
 export async function chat(opts: {
   system: string;
@@ -36,8 +43,83 @@ export async function chat(opts: {
   tools?: ToolSpec[];
   maxTokens?: number;
 }): Promise<ChatResult> {
+  if (PROVIDER === "openrouter") return openrouterChat(opts);
   if (PROVIDER === "gemini") return geminiChat(opts);
   return anthropicChat(opts);
+}
+
+// ── OpenRouter (OpenAI-compatible /chat/completions) ───────────
+// Free-tier models (":free" suffix) cost nothing. Tool-calling uses the
+// standard OpenAI `tools` / `tool_calls` schema, so the whole fleet's tool
+// loop works unchanged. A comma-separated LLM_MODEL_FALLBACKS list lets one
+// busy free model roll over to the next instead of failing a task.
+async function openrouterChat(opts: {
+  system: string; messages: ChatTurn[]; tools?: ToolSpec[]; maxTokens?: number;
+}): Promise<ChatResult> {
+  const apiKey = process.env.OPENROUTER_API_KEY ?? "";
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY not set");
+
+  const messages: Record<string, unknown>[] = [{ role: "system", content: opts.system }];
+  for (const m of opts.messages) {
+    if (m.role === "tool") {
+      messages.push({ role: "tool", tool_call_id: m.toolCallId, content: m.content });
+    } else {
+      messages.push({ role: m.role, content: m.content });
+    }
+  }
+
+  const tools = opts.tools?.map((t) => ({
+    type: "function",
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+
+  const models = [MODEL, ...(process.env.LLM_MODEL_FALLBACKS ?? "")
+    .split(",").map((s) => s.trim()).filter(Boolean)];
+
+  let lastErr = "";
+  for (const model of models) {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+        // Attribution headers OpenRouter recommends.
+        "HTTP-Referer": "https://luveni.com",
+        "X-Title": "Luveni Ops Fleet",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: opts.maxTokens ?? 1024,
+        messages,
+        ...(tools?.length ? { tools, tool_choice: "auto" } : {}),
+      }),
+    });
+    if (!res.ok) {
+      lastErr = `OpenRouter ${res.status} (${model}): ${await res.text().catch(() => "")}`;
+      // 429 = free-model rate limit → try the next fallback model.
+      if (res.status === 429 && model !== models[models.length - 1]) continue;
+      throw new Error(lastErr);
+    }
+    const data: any = await res.json();
+    const msg = data.choices?.[0]?.message ?? {};
+    const toolCalls: ToolCall[] = (msg.tool_calls ?? []).map((tc: any) => ({
+      id: tc.id,
+      name: tc.function?.name,
+      input: safeJson(tc.function?.arguments),
+    }));
+    return {
+      text: typeof msg.content === "string" ? msg.content : "",
+      toolCalls,
+      inputTokens: data.usage?.prompt_tokens ?? 0,
+      outputTokens: data.usage?.completion_tokens ?? 0,
+    };
+  }
+  throw new Error(lastErr || "OpenRouter: no models available");
+}
+
+function safeJson(s: unknown): Record<string, unknown> {
+  if (typeof s !== "string") return (s as Record<string, unknown>) ?? {};
+  try { return JSON.parse(s); } catch { return {}; }
 }
 
 // ── Anthropic Messages API ─────────────────────────────────────
