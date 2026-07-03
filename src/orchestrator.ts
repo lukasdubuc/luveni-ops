@@ -9,6 +9,7 @@
 import { AGENTS, AGENT_BY_ID, type AgentProfile } from "./agents.js";
 import { claimNextTask } from "./bus.js";
 import { runAgentTask } from "./agent.js";
+import { seedFleetWork, workerAgents } from "./seed.js";
 
 const POLL = Number(process.env.POLL_INTERVAL_MS ?? 5000);
 
@@ -40,7 +41,16 @@ async function main(): Promise<void> {
   console.log(`Luveni Ops fleet up — ${agents.length} agents: ${agents.map((a) => a.id).join(", ")}`);
   if (!process.env.SUPABASE_URL) console.warn("⚠ SUPABASE_URL not set — see .env.example");
 
+  // Keep the queue topped up so agents work non-stop and find their own
+  // work when caught up. Only seeds the workers this process runs.
+  const seedable = workerAgents(agents);
+
   while (running) {
+    try {
+      if (seedable.length) await seedFleetWork(seedable);
+    } catch (e: any) {
+      console.error("seed error:", e.message);
+    }
     await tick(agents);
     await new Promise((r) => setTimeout(r, POLL));
   }

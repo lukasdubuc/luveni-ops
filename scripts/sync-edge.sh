@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-for f in agents.ts bus.ts agent.ts llm.ts tools.ts finance.ts; do
+for f in agents.ts bus.ts agent.ts llm.ts tools.ts finance.ts seed.ts; do
   sed 's/\.js"/.ts"/g' "src/$f" > "edge/agent-fleet-tick/$f"
 done
 echo "edge/agent-fleet-tick refreshed from src/ — redeploy the function to apply."
