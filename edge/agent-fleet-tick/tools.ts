@@ -5,9 +5,9 @@
 //  + an async runner returning a JSON-serializable result.
 // ─────────────────────────────────────────────────────────────
 
-import { db, enqueueTask, postMessage } from "./bus.js";
-import { computeMargin, splitNetProfit, type OrderLine } from "./finance.js";
-import type { ToolSpec } from "./llm.js";
+import { db, enqueueTask, postMessage } from "./bus.ts";
+import { computeMargin, splitNetProfit, type OrderLine } from "./finance.ts";
+import type { ToolSpec } from "./llm.ts";
 
 export interface Tool {
   spec: ToolSpec;
