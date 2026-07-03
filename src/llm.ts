@@ -148,7 +148,7 @@ async function anthropicChat(opts: {
     }),
   });
   if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text().catch(() => "")}`);
-  const data = await res.json();
+  const data: any = await res.json();
 
   let text = "";
   const toolCalls: ToolCall[] = [];
@@ -188,7 +188,7 @@ async function geminiChat(opts: {
     { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
   );
   if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text().catch(() => "")}`);
-  const data = await res.json();
+  const data: any = await res.json();
   const parts = data.candidates?.[0]?.content?.parts ?? [];
   let text = "";
   const toolCalls: ToolCall[] = [];

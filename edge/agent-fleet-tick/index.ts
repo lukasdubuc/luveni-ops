@@ -21,6 +21,7 @@ import "./env-shim.ts";
 import { AGENTS, AGENT_BY_ID, type AgentProfile } from "./agents.ts";
 import { claimNextTask } from "./bus.ts";
 import { runAgentTask } from "./agent.ts";
+import { seedFleetWork, workerAgents } from "./seed.ts";
 
 Deno.serve(async (req: Request) => {
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
@@ -30,6 +31,15 @@ Deno.serve(async (req: Request) => {
     : AGENTS;
   // Stay under the edge wall-clock limit; leftover tasks are picked up next tick.
   const deadline = Date.now() + Math.min(Number(body.budget_ms ?? 110_000), 140_000);
+
+  // Top up the queue first so idle workers get a daily/self-directed task
+  // to run this same tick — this is what keeps the fleet working non-stop.
+  // Skip when the caller targets specific agents for a one-off manual run.
+  let seeded: { daily: number; selfDirect: number } = { daily: 0, selfDirect: 0 };
+  if (!ids.length) {
+    try { seeded = await seedFleetWork(workerAgents(agents)); }
+    catch (e: any) { seeded = { daily: 0, selfDirect: 0, ...{ error: String(e?.message ?? e) } } as any; }
+  }
 
   const processed: unknown[] = [];
   while (Date.now() < deadline) {
@@ -48,7 +58,7 @@ Deno.serve(async (req: Request) => {
     if (claimed.length === 0) break; // queue drained
   }
 
-  return new Response(JSON.stringify({ ok: true, agents: agents.map((a) => a.id), processed }), {
+  return new Response(JSON.stringify({ ok: true, seeded, agents: agents.map((a) => a.id), processed }), {
     headers: { "content-type": "application/json" },
   });
 });
