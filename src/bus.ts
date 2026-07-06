@@ -10,8 +10,17 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 const url = process.env.SUPABASE_URL ?? "";
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
-export const db: SupabaseClient = createClient(url, key, {
-  auth: { persistSession: false, autoRefreshToken: false },
+// Lazy client: importing this module must not require env keys (the roster
+// smoke check and unit tests import agents/tools without a live Supabase).
+let _db: SupabaseClient | null = null;
+export const db: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    if (!_db) {
+      if (!url || !key) throw new Error("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set");
+      _db = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+    }
+    return (_db as any)[prop];
+  },
 });
 
 export interface AgentTask {
