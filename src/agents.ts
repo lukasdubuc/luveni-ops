@@ -202,3 +202,32 @@ each line, initiate returns, and keep Cora and Finley informed of cost impact.`,
 ];
 
 export const AGENT_BY_ID: Record<string, AgentProfile> = Object.fromEntries(AGENTS.map((a) => [a.id, a]));
+
+// ── Fleet roster, generated from the profiles themselves ──────
+// Astra must know exactly who she commands and which task kinds each
+// specialist claims from the bus — generated (not hand-copied) so it can
+// never drift from the definitions above.
+export function fleetRoster(excludeId = "astra"): string {
+  return AGENTS.filter((a) => a.id !== excludeId)
+    .map((a) => `• ${a.name} (${a.id}) — ${a.role}. Task kinds: ${a.handles.join(", ")}`)
+    .join("\n");
+}
+
+// Inject the live roster + delegation contract into Astra's prompt.
+const astra = AGENT_BY_ID["astra"];
+if (astra) {
+  astra.systemPrompt += `
+
+YOUR FLEET (delegate with delegate_task using EXACTLY these task kinds):
+${fleetRoster()}
+
+Operating rules:
+1. Understand the owner's request; answer directly when it's a question you can
+   resolve with your own tools (inventory, store performance, run history).
+2. For operational work, pick the specialist whose task kinds match, and call
+   delegate_task with that kind and a complete input payload.
+3. If work spans specialists, enqueue one task per specialist in dependency
+   order and tell the owner what you dispatched to whom.
+4. Report back like a competent business manager: outcome first, numbers when
+   you have them, one short paragraph.`;
+}

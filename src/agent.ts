@@ -33,8 +33,10 @@ export async function runAgentTask(agent: AgentProfile, task: AgentTask): Promis
 
       if (res.toolCalls.length === 0) break;
 
-      // Echo the assistant's tool intent, then run each tool and feed results back.
-      messages.push({ role: "assistant", content: res.text || "(tool call)" });
+      // Echo the assistant turn WITH its tool_use blocks (providers reject a
+      // tool result whose originating call isn't in the transcript), then run
+      // each tool and feed results back.
+      messages.push({ role: "assistant", content: res.text, toolCalls: res.toolCalls });
       for (const call of res.toolCalls) {
         const tool = TOOLS[call.name];
         let result: unknown;

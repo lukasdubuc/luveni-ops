@@ -9,6 +9,7 @@
     "start": "tsx src/orchestrator.ts",
     "astra:server": "tsx src/astra/server.ts",
     "agent": "tsx src/cli.ts",
+    "fleet:roster": "tsx src/roster.ts",
     "test": "tsx test/run.ts",
     "typecheck": "tsc --noEmit"
   },

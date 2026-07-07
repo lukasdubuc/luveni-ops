@@ -17,6 +17,10 @@ export interface ToolCall { id: string; name: string; input: Record<string, unkn
 export interface ChatTurn {
   role: "user" | "assistant" | "tool";
   content: string;
+  /** On assistant turns: the tool calls the model made, echoed back so the
+   *  provider can pair each tool result with its originating tool_use block
+   *  (Anthropic rejects tool_result blocks with no matching tool_use). */
+  toolCalls?: ToolCall[];
   toolCallId?: string;
 }
 
@@ -63,6 +67,18 @@ async function openrouterChat(opts: {
   for (const m of opts.messages) {
     if (m.role === "tool") {
       messages.push({ role: "tool", tool_call_id: m.toolCallId, content: m.content });
+    } else if (m.role === "assistant" && m.toolCalls?.length) {
+      // Echo the assistant's tool_calls — OpenAI-schema providers reject a
+      // `tool` message whose tool_call_id has no matching assistant tool_call.
+      messages.push({
+        role: "assistant",
+        content: m.content || null,
+        tool_calls: m.toolCalls.map((c) => ({
+          id: c.id,
+          type: "function",
+          function: { name: c.name, arguments: JSON.stringify(c.input ?? {}) },
+        })),
+      });
     } else {
       messages.push({ role: m.role, content: m.content });
     }
@@ -133,6 +149,17 @@ async function anthropicChat(opts: {
     if (m.role === "tool") {
       return { role: "user", content: [{ type: "tool_result", tool_use_id: m.toolCallId, content: m.content }] };
     }
+    // Assistant turns that made tool calls must echo the tool_use blocks —
+    // Anthropic rejects any tool_result whose tool_use_id has no match.
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      return {
+        role: "assistant",
+        content: [
+          ...(m.content ? [{ type: "text", text: m.content }] : []),
+          ...m.toolCalls.map((c) => ({ type: "tool_use", id: c.id, name: c.name, input: c.input })),
+        ],
+      };
+    }
     return { role: m.role, content: m.content };
   });
 
@@ -171,10 +198,25 @@ async function geminiChat(opts: {
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
   const model = MODEL.startsWith("gemini") ? MODEL : "gemini-2.5-flash";
 
-  const contents = opts.messages.map((m) => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }],
-  }));
+  const contents = opts.messages.map((m) => {
+    // Tool results pair with the model's functionCall via functionResponse.
+    if (m.role === "tool") {
+      return {
+        role: "user",
+        parts: [{ functionResponse: { name: m.toolCallId ?? "tool", response: { result: m.content } } }],
+      };
+    }
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      return {
+        role: "model",
+        parts: [
+          ...(m.content ? [{ text: m.content }] : []),
+          ...m.toolCalls.map((c) => ({ functionCall: { name: c.name, args: c.input } })),
+        ],
+      };
+    }
+    return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] };
+  });
   const body: Record<string, unknown> = {
     systemInstruction: { parts: [{ text: opts.system }] },
     contents,
